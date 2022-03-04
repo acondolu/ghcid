@@ -25,6 +25,7 @@ import Data.List.Extra
 import Control.Applicative
 import Prelude
 import System.IO.Extra
+import System.Posix.Signals
 
 
 data Session = Session
@@ -66,16 +67,29 @@ withSession f = do
         debugShutdown "Finish finally"
 
 
--- | Kill. Wait just long enough to ensure you've done the job, but not to see the results.
+-- | Kill a Ghci session.
+-- Wait until the child Ghci process has exited.
 kill :: Ghci -> IO ()
 kill ghci = ignored $ do
-    timeout 5 $ do
-        debugShutdown "Before quit"
-        ignored $ quit ghci
-        debugShutdown "After quit"
-    debugShutdown "Before terminateProcess"
-    ignored $ terminateProcess $ process ghci
-    debugShutdown "After terminateProcess"
+    -- When a user presses Ctrl-C twice, the Haskell RTS will
+    -- terminate ghcid, leaving the child ghci process running
+    -- silently in the background.
+    -- To avoid leaking ghci children, we temporarily disable
+    -- the default signal handler for SIGINT. It's going to
+    -- be restored when ghci exits.
+    -- See: https://github.com/ndmitchell/ghcid/issues/286
+    bracket
+        (installHandler sigINT Ignore Nothing)
+        (\h -> installHandler sigINT h Nothing) $ \_ -> do
+            timeout 5 $ do
+                debugShutdown "Before quit"
+                ignored $ quit ghci
+                debugShutdown "After quit"
+            debugShutdown "Before terminateProcess"
+            ignored $ terminateProcess $ process ghci
+            debugShutdown "After terminateProcess"
+            waitForProcess $ process ghci
+            debugShutdown "After withForProcess"
     -- Ctrl-C after a tests keeps the cursor hidden,
     -- `setSGR []`didn't seem to be enough
     -- See: https://github.com/ndmitchell/ghcid/issues/254
